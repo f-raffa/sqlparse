@@ -9,8 +9,11 @@
 
 import re
 
+import sqlparse.sql
 from sqlparse import tokens as T
-from sqlparse.utils import imt, remove_quotes
+from sqlparse.utils import imt, remove_quotes, recurse
+from sqlparse.exceptions import SQLParseError
+import re
 
 
 class NameAliasMixin:
@@ -159,7 +162,10 @@ class TokenList(Token):
         self.tokens = tokens or []
         [setattr(token, 'parent', self) for token in self.tokens]
         super().__init__(None, str(self))
-        self.is_group = True
+        if len(tokens)==1 and not tokens[0].is_group:
+            self.is_group = False
+        else:
+            self.is_group = True
 
     def __str__(self):
         return ''.join(token.value for token in self.flatten())
@@ -194,6 +200,9 @@ class TokenList(Token):
             if token.is_group and (max_depth is None or depth < max_depth):
                 parent_pre = '   ' if last else '|  '
                 token._pprint_tree(max_depth, depth + 1, f, _pre + parent_pre)
+
+    def _extended_(self):
+        None
 
     def get_token_at_offset(self, offset):
         """Returns the token that is on position offset."""
@@ -261,9 +270,9 @@ class TokenList(Token):
                         or (skip_cm and imt(tk, t=T.Comment, i=Comment)))
         return self._token_matching(matcher)[1]
 
-    def token_next_by(self, i=None, m=None, t=None, idx=-1, end=None):
+    def token_next_by(self, i=None, m=None, t=None, idx=-1, end=None, reverse=False):
         idx += 1
-        return self._token_matching(lambda tk: imt(tk, i, m, t), idx, end)
+        return self._token_matching(lambda tk: imt(tk, i, m, t), idx, end, reverse)
 
     def token_not_matching(self, funcs, idx):
         funcs = (funcs,) if not isinstance(funcs, (list, tuple)) else funcs
@@ -280,10 +289,10 @@ class TokenList(Token):
         If *skip_cm* is ``True`` comments are ignored.
         ``None`` is returned if there's no previous token.
         """
-        return self.token_next(idx, skip_ws, skip_cm, _reverse=True)
+        return self.token_next(idx, skip_ws, skip_cm, reverse=True)
 
     # TODO: May need to re-add default value to idx
-    def token_next(self, idx, skip_ws=True, skip_cm=False, _reverse=False):
+    def token_next(self, idx, skip_ws=True, skip_cm=False, reverse=False):
         """Returns the next token relative to *idx*.
 
         If *skip_ws* is ``True`` (the default) whitespace tokens are ignored.
@@ -297,7 +306,7 @@ class TokenList(Token):
         def matcher(tk):
             return not ((skip_ws and tk.is_whitespace)
                         or (skip_cm and imt(tk, t=T.Comment, i=Comment)))
-        return self._token_matching(matcher, idx, reverse=_reverse)
+        return self._token_matching(matcher, idx, reverse=reverse)
 
     def token_index(self, token, start=0):
         """Return list index of token."""
@@ -321,6 +330,7 @@ class TokenList(Token):
 
             grp = start
             grp.tokens.extend(subtokens)
+            grp._extended_()
             del self.tokens[start_idx + 1:end_idx]
             grp.value = str(start)
         else:
@@ -403,6 +413,17 @@ class TokenList(Token):
 class Statement(TokenList):
     """Represents a SQL statement."""
 
+    __slots__ = 'opening_keyword_length'
+
+    def __init__(self, stmnt):
+        super().__init__(stmnt)
+        self.opening_keyword_length = 0
+
+    def get_sections(self):
+        for token in self.tokens:
+            if isinstance(token, (Statement, Clause)):
+                yield token
+
     def get_type(self):
         """Returns the type of a statement.
 
@@ -444,6 +465,7 @@ class Identifier(NameAliasMixin, TokenList):
 
     Identifiers may have aliases or typecasts.
     """
+    __slots__ = 'id_count'
 
     def is_wildcard(self):
         """Return ``True`` if this identifier contains a wildcard."""
@@ -469,9 +491,36 @@ class Identifier(NameAliasMixin, TokenList):
                 # Use [1:-1] index to discard the square brackets
                 yield token.tokens[1:-1]
 
+    def __init__(self, tlist):
+        self.id_count = 0
+        for token in tlist:
+            if token.is_group:
+                self.id_count = 2
+                break
+            else:
+                self.id_count = 1
+        super().__init__(tlist)
+        if len(tlist)>1:
+            self.is_group = False
+            for token in tlist:
+                if token.is_group:
+                    self.is_group = True
+                    break
+
+
+class SignedIdentifier(Identifier):
+    """Grouping of operations"""
+
 
 class IdentifierList(TokenList):
     """A list of :class:`~sqlparse.sql.Identifier`\'s."""
+    __slots__ = 'id_list_count'
+
+    def _extended_(self):
+        self.id_list_count = 0
+        for token in self.tokens:
+            if isinstance(token, (Identifier, SubQuery)):
+                self.id_list_count += token.id_count
 
     def get_identifiers(self):
         """Returns the identifiers.
@@ -481,6 +530,10 @@ class IdentifierList(TokenList):
         for token in self.tokens:
             if not (token.is_whitespace or token.match(T.Punctuation, ',')):
                 yield token
+
+    def __init__(self, tlist):
+        super().__init__(tlist)
+        self._extended_()
 
 
 class TypedLiteral(TokenList):
@@ -492,12 +545,24 @@ class TypedLiteral(TokenList):
 
 class Parenthesis(TokenList):
     """Tokens between parenthesis."""
+
+    __slots__ = ('is_codeBlockDelimiter', 'is_subQuery')
+
     M_OPEN = T.Punctuation, '('
     M_CLOSE = T.Punctuation, ')'
 
     @property
     def _groupable_tokens(self):
         return self.tokens[1:-1]
+
+    def __init__(self, tlist):
+        self.is_codeBlockDelimiter = False
+        self.is_subQuery = False
+        super().__init__(tlist)
+        if len(tlist)>3 or tlist[1].is_group:
+            self.is_group = True
+        else:
+            self.is_group = False
 
 
 class SquareBrackets(TokenList):
@@ -508,6 +573,13 @@ class SquareBrackets(TokenList):
     @property
     def _groupable_tokens(self):
         return self.tokens[1:-1]
+
+    def __init__(self, tlist):
+        super().__init__(tlist)
+        if len(tlist.tokens)>3 or tlist.tokens[1].is_group:
+            self.is_group = True
+        else:
+            self.is_group = False
 
 
 class Assignment(TokenList):
@@ -545,24 +617,152 @@ class Comment(TokenList):
         return self.tokens and self.tokens[0].ttype == T.Comment.Multiline
 
 
-class Where(TokenList):
-    """A WHERE clause."""
-    M_OPEN = T.Keyword, 'WHERE'
-    M_CLOSE = T.Keyword, (
-        'ORDER BY', 'GROUP BY', 'LIMIT', 'UNION', 'UNION ALL', 'EXCEPT',
-        'HAVING', 'RETURNING', 'INTO')
+class SubQuery(TokenList):
+
+    __slots__ = 'id_count'
+
+    def __init__(self, tlist):
+        super().__init__(tlist)
+        self.id_count = 1
+
+    def get_query_definition(self):
+        # Still to be implemented
+        return None
+
+class ConditionsList(TokenList):
+    """A list of :class:`~sqlparse.sql.Identifier`\'s."""
+    __slots__ = ('conditions_count', 'opening_keyword_length')
+
+    def __init__(self, tlist):
+        self.conditions_count = 0
+        for token in tlist:
+            if token.value in ('AND', 'OR'):
+                self.opening_keyword_length = len(token.value)
+            elif not token.is_whitespace:
+                cond_count_increment = 0
+                if isinstance(token, Comparison):
+                    cond_count_increment = 1
+                elif isinstance(token, Parenthesis):
+                    cond_count_increment = 2
+                self.conditions_count += cond_count_increment
+
+        super().__init__(tlist)
 
 
-class Having(TokenList):
+class Clause(TokenList):
+    """Represents a SQL statement."""
+    __slots__ = 'opening_keyword_length'
+
+    def __init__(self, tlist):
+        super().__init__(tlist)
+        self.opening_keyword_length = len(re.sub('[+]', '', self.M_OPEN[1]))
+
+
+class SelectProjection(Clause):
+    M_OPEN = (T.Keyword.DML, 'SELECT')
+
+    def get_identifiers_list(self):
+        _, id_list = self.token_next_by(idx=1, i=(IdentifierList, Identifier))
+        return id_list
+
+    def __init__(self, tlist):
+        super().__init__(tlist)
+
+
+class ClauseWith(Clause):
+    M_OPEN = (T.Keyword.CTE, 'WITH')
+
+    def get_identifiers_list(self):
+        _, id_list = self.token_next_by(idx=1, i=(IdentifierList, Identifier, SubQuery))
+        return id_list
+
+    def __init__(self, tlist):
+        super().__init__(tlist)
+
+
+class ClausePartitionBy(Clause):
+
+    M_OPEN = (T.Keyword, 'PARTITION +BY', True)
+
+    def get_identifiers_list(self):
+        _, id_list = self.token_next_by(idx=1, i=(IdentifierList, Identifier))
+        return id_list
+
+    def __init__(self, tlist):
+        super().__init__(tlist)
+
+
+class ClauseOrderBy(Clause):
+
+    M_OPEN = (T.Keyword, 'ORDER +BY', True)
+
+    def get_identifiers_list(self):
+        _, id_list = self.token_next_by(idx=1, i=(IdentifierList, Identifier))
+        return id_list
+
+    def __init__(self, tlist):
+        super().__init__(tlist)
+
+
+class ClauseGroupBy(Clause):
+
+    M_OPEN = (T.Keyword, 'GROUP +BY', True)
+
+    def get_identifiers_list(self):
+        _, id_list = self.token_next_by(idx=1, i=(IdentifierList, Identifier))
+        return id_list
+
+    def __init__(self, tlist):
+        super().__init__(tlist)
+
+
+class ClauseHaving(Clause):
     """A HAVING clause."""
     M_OPEN = T.Keyword, 'HAVING'
-    M_CLOSE = T.Keyword, ('ORDER BY', 'LIMIT')
+    M_CLOSE = [(T.Keyword, ('ORDER BY', 'LIMIT')),
+               (T.Punctuation, ';', True)]
+
+    def __init__(self, tlist):
+        super().__init__(tlist)
+
+
+class ClauseWhere(Clause):
+    """A WHERE clause."""
+    M_OPEN = T.Keyword, 'WHERE'
+    M_CLOSE = [*ClauseHaving.M_CLOSE,
+               (T.Keyword, ('UNION', 'UNION ALL', 'EXCEPT', 'RETURNING', 'INTO'), True)]
+    I_CLOSE = (ClauseHaving, ClauseGroupBy, ClauseOrderBy)
+
+    def __init__(self, tlist):
+        super().__init__(tlist)
+
+
+class ClauseFrom(Clause):
+    M_OPEN = T.Keyword, 'FROM'
+    M_CLOSE = ClauseWhere.M_CLOSE
+    I_CLOSE = (ClauseWhere, ClauseHaving, ClauseGroupBy, ClauseOrderBy)
+
+    def __init__(self, tlist):
+        super().__init__(tlist)
+
+
+class ClauseInsert(Clause):
+    M_OPEN = (T.Keyword.DML, 'INSERT')
+
+    def __init__(self, tlist):
+        super().__init__(tlist)
 
 
 class Case(TokenList):
     """A CASE statement with one or more WHEN and possibly an ELSE part."""
     M_OPEN = T.Keyword, 'CASE'
     M_CLOSE = T.Keyword, 'END'
+
+    __slots__ = 'opening_keyword_length'
+
+    def __init__(self, tlist):
+        super().__init__(tlist)
+        self.opening_keyword_length = len(self.M_OPEN[1])
 
     def get_cases(self, skip_ws=False):
         """Returns a list of 2-tuples (condition, value).
@@ -612,6 +812,34 @@ class Case(TokenList):
         return ret
 
 
+class StatementSelect(Statement):
+    M_OPEN = (T.Keyword.DML, 'SELECT')
+    I_OPEN = SelectProjection
+    M_CLOSE = [(T.Keyword, ('UNION', 'UNION ALL'), True), (T.Punctuation, ';', True)]
+
+    def __init__(self, stmnt=None):
+        super().__init__(stmnt)
+        self.opening_keyword_length = len(self.M_OPEN[1])
+
+
+class StatementUnion(Statement):
+    M_OPEN = StatementSelect.M_OPEN
+
+    def __init__(self, stmnt=None):
+        super().__init__(stmnt)
+        self.opening_keyword_length = len(self.M_OPEN[1])
+
+
+class StatementInsert(Statement):
+    M_OPEN = (T.Keyword.DML, 'INSERT')
+    I_OPEN = ClauseInsert
+    M_CLOSE = (T.Punctuation, ';')
+
+    def __init__(self, stmnt=None):
+        super().__init__(stmnt)
+        self.opening_keyword_length = len(self.M_OPEN[1])
+
+
 class Function(NameAliasMixin, TokenList):
     """A function or procedure call."""
 
@@ -624,6 +852,15 @@ class Function(NameAliasMixin, TokenList):
             elif imt(token, i=(Function, Identifier), t=T.Literal):
                 return [token, ]
         return []
+
+
+class WindowFunction(TokenList):
+    M_OPEN = (T.Keyword, ('OVER', 'FILTER'))
+
+    def __init__(self, tlist):
+        super().__init__(tlist)
+
+
 
 
 class Begin(TokenList):

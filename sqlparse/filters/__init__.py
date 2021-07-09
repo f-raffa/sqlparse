@@ -15,6 +15,7 @@ from sqlparse.filters.output import OutputPythonFilter
 
 from sqlparse.filters.tokens import KeywordCaseFilter
 from sqlparse.filters.tokens import IdentifierCaseFilter
+from sqlparse.filters.tokens import BuiltinCaseFilter
 from sqlparse.filters.tokens import TruncateStringFilter
 
 from sqlparse.filters.reindent import ReindentFilter
@@ -32,6 +33,7 @@ __all__ = [
 
     'KeywordCaseFilter',
     'IdentifierCaseFilter',
+    'BuiltinCaseFilter',
     'TruncateStringFilter',
 
     'ReindentFilter',

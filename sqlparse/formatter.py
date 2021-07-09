@@ -22,6 +22,10 @@ def validate_options(options):
     if idcase not in [None, 'upper', 'lower', 'capitalize']:
         raise SQLParseError('Invalid value for identifier_case: '
                             '{!r}'.format(idcase))
+    bicase = options.get('builtin_case')
+    if bicase not in [None, 'upper', 'lower', 'capitalize']:
+        raise SQLParseError('Invalid value for bultin_case: '
+                            '{!r}'.format(bicase))
 
     ofrmt = options.get('output_format')
     if ofrmt not in [None, 'sql', 'python', 'php']:
@@ -75,7 +79,9 @@ def validate_options(options):
     if reindent_aligned not in [True, False]:
         raise SQLParseError('Invalid value for reindent_aligned: '
                             '{!r}'.format(reindent))
-    elif reindent_aligned:
+    elif reindent_aligned and reindent:
+        raise SQLParseError('Exclusive options chose: reindent and reindent_aligned.')
+    else:
         options['strip_whitespace'] = True
 
     indent_after_first = options.get('indent_after_first', False)
@@ -144,6 +150,10 @@ def build_filter_stack(stack, options):
     if options.get('identifier_case'):
         stack.preprocess.append(
             filters.IdentifierCaseFilter(options['identifier_case']))
+
+    if options.get('builtin_case'):
+        stack.preprocess.append(
+            filters.BuiltinCaseFilter(options['builtin_case']))
 
     if options.get('truncate_strings'):
         stack.preprocess.append(filters.TruncateStringFilter(

@@ -26,6 +26,10 @@ class KeywordCaseFilter(_CaseFilter):
     ttype = T.Keyword
 
 
+class BuiltinCaseFilter(_CaseFilter):
+    ttype = T.Name.Builtin
+
+
 class IdentifierCaseFilter(_CaseFilter):
     ttype = T.Name, T.String.Symbol
 

@@ -48,7 +48,7 @@ def test_compare_expr(s, a, b):
     assert str(parsed) == s
     assert isinstance(parsed.tokens[2], sql.Identifier)
     assert isinstance(parsed.tokens[6], sql.Identifier)
-    assert isinstance(parsed.tokens[8], sql.Where)
+    assert isinstance(parsed.tokens[8], sql.ClauseWhere)
     assert len(parsed.tokens) == 9
     where = parsed.tokens[8]
     assert isinstance(where.tokens[2], sql.Comparison)
@@ -71,7 +71,7 @@ def test_grouping_identifiers():
     assert str(parsed) == s
     assert isinstance(parsed.tokens[2], sql.Identifier)
     assert isinstance(parsed.tokens[6], sql.Identifier)
-    assert isinstance(parsed.tokens[8], sql.Where)
+    assert isinstance(parsed.tokens[8], sql.ClauseWhere)
     s = 'select * from foo where foo.id = 1'
     parsed = sqlparse.parse(s)[0]
     assert str(parsed) == s
@@ -256,7 +256,7 @@ def test_grouping_where():
     s = 'select x from (select y from foo where bar = 1) z'
     p = sqlparse.parse(s)[0]
     assert str(p) == s
-    assert isinstance(p.tokens[-1].tokens[0].tokens[-2], sql.Where)
+    assert isinstance(p.tokens[-1].tokens[0].tokens[-2], sql.ClauseWhere)
 
 
 @pytest.mark.parametrize('s', (
@@ -271,7 +271,7 @@ def test_grouping_where_union(s):
 def test_returning_kw_ends_where_clause():
     s = 'delete from foo where x > y returning z'
     p = sqlparse.parse(s)[0]
-    assert isinstance(p.tokens[6], sql.Where)
+    assert isinstance(p.tokens[6], sql.ClauseWhere)
     assert p.tokens[7].ttype == T.Keyword
     assert p.tokens[7].value == 'returning'
 
@@ -279,7 +279,7 @@ def test_returning_kw_ends_where_clause():
 def test_into_kw_ends_where_clause():  # issue324
     s = 'select * from foo where a = 1 into baz'
     p = sqlparse.parse(s)[0]
-    assert isinstance(p.tokens[8], sql.Where)
+    assert isinstance(p.tokens[8], sql.ClauseWhere)
     assert p.tokens[9].ttype == T.Keyword
     assert p.tokens[9].value == 'into'
 
@@ -511,7 +511,7 @@ def test_like_and_ilike_comparison():
                         and re.match(expected_value, where_token.value))
 
     [p1] = sqlparse.parse("select * from mytable where mytable.mycolumn LIKE 'expr%' limit 5;")
-    [p1_where] = [token for token in p1 if isinstance(token, sql.Where)]
+    [p1_where] = [token for token in p1 if isinstance(token, sql.ClauseWhere)]
     validate_where_clause(p1_where, [
         (T.Keyword, "where"),
         (T.Whitespace, None),
@@ -521,7 +521,7 @@ def test_like_and_ilike_comparison():
 
     [p2] = sqlparse.parse(
         "select * from mytable where mycolumn NOT ILIKE '-expr' group by othercolumn;")
-    [p2_where] = [token for token in p2 if isinstance(token, sql.Where)]
+    [p2_where] = [token for token in p2 if isinstance(token, sql.ClauseWhere)]
     validate_where_clause(p2_where, [
         (T.Keyword, "where"),
         (T.Whitespace, None),

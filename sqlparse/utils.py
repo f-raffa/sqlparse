@@ -9,6 +9,7 @@ import itertools
 import re
 from collections import deque
 from contextlib import contextmanager
+import sys, traceback
 
 # This regular expression replaces the home-cooked parser that was here before.
 # It is much faster, but requires an extra post-processing step to get the
@@ -71,7 +72,15 @@ def recurse(*cls):
             for sgroup in tlist.get_sublists():
                 if not isinstance(sgroup, cls):
                     wrapped_f(sgroup)
-            f(tlist)
+            try:
+                f(tlist)
+            except Exception as e:
+                print("######################################\n\n\n")
+                print("{0}: {1} grouping \n{2}".format(str(e.__class__), e, tlist.value))
+                exc_type, exc_value, exc_traceback = sys.exc_info()
+                print("*** print_tb:")
+                traceback.print_tb(exc_traceback, limit=15, file=sys.stdout)
+                exit(1)
 
         return wrapped_f
 
